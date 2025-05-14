@@ -3,12 +3,12 @@ package co.akoot.plugins
 import com.destroystokyo.paper.event.block.BlockDestroyEvent
 import io.papermc.paper.event.block.BlockBreakBlockEvent
 import net.kyori.adventure.text.serializer.gson.GsonComponentSerializer
+import org.bukkit.GameMode
 import org.bukkit.Location
 import org.bukkit.Material
 import org.bukkit.NamespacedKey
 import org.bukkit.block.Block
 import org.bukkit.block.BlockFace
-import org.bukkit.block.data.Ageable
 import org.bukkit.event.EventHandler
 import org.bukkit.event.Listener
 import org.bukkit.event.block.BlockBreakEvent
@@ -30,71 +30,68 @@ class Alces : JavaPlugin(), Listener {
     }
 
     @EventHandler
-    fun onBlockPlace(event: BlockPlaceEvent) {
-        val block = event.block
+    fun BlockPlaceEvent.onBlockPlace() {
+        if (isCancelled) return
 
-        val blockData = block.blockData
-        if (blockData is Ageable) return
+        val item = itemInHand
+        if (!item.type.isBlock) return
 
-        val pdc = getPDC(block)
-        val key = getKey(block.location)
-
-        val itemMeta = event.itemInHand.itemMeta
-        val displayName = itemMeta.displayName()?.let { serializer.serialize(it) }
-        val lore = itemMeta.lore()?.mapNotNull { serializer.serialize(it) }?.joinToString("\n")
+        val meta = item.itemMeta ?: return
+        val displayName = meta.displayName()?.let { serializer.serialize(it) }
+        val lore = meta.lore()?.mapNotNull { serializer.serialize(it) }?.joinToString("\n")
 
         if (displayName == null && lore == null) return
 
-        pdc.set(key, PersistentDataType.STRING, "${displayName ?: "-"}\n${lore ?: "-"}")
+        val data = "${displayName ?: "-"}\n${lore ?: "-"}"
+        getPDC(block).set(getKey(block.location), PersistentDataType.STRING, data)
     }
 
     @EventHandler
-    fun onBlockBreak(event: BlockBreakEvent) {
-        val block = event.block
+    fun BlockBreakEvent.onBlockBreak() {
+        if (isCancelled) return
+        handleBlockEvent(block, null, player.gameMode == GameMode.SURVIVAL)
+    }
 
+    @EventHandler
+    fun BlockBreakBlockEvent.onBlockBreakBlock() {
         handleBlockEvent(block)
+        drops.clear()
     }
 
     @EventHandler
-    fun onBlockBreakBlock(event: BlockBreakBlockEvent) {
-        val block = event.block
-
+    fun BlockDestroyEvent.onBlockDestroy() {
+        if (isCancelled) return
         handleBlockEvent(block)
-        event.drops.clear()
+        setWillDrop(false)
     }
 
     @EventHandler
-    fun onBlockDestroy(event: BlockDestroyEvent) {
-        val block = event.block
-
-        handleBlockEvent(block)
-        event.setWillDrop(false)
-    }
-
-    @EventHandler
-    fun onExplosion(event: EntityExplodeEvent) {
-        val explodedBlocks = event.blockList()
-
-        for (block in explodedBlocks) {
-            handleBlockEvent(block)
+    fun EntityExplodeEvent.onExplosion() {
+        if (isCancelled) return
+        if (entity.type.name != "WIND_CHARGE") {
+            for (block in blockList()) {
+                handleBlockEvent(block)
+            }
         }
     }
 
     @EventHandler
-    fun pistonRetract(event: BlockPistonRetractEvent) {
-        event.blocks.forEach { block ->
-            handleBlockEvent(block, event.direction)
+    fun BlockPistonRetractEvent.pistonRetract() {
+        if (isCancelled) return
+        blocks.forEach { block ->
+            handleBlockEvent(block, direction)
         }
     }
 
     @EventHandler
-    fun pistonExtend(event: BlockPistonExtendEvent) {
-        event.blocks.forEach { block ->
-            handleBlockEvent(block, event.direction)
+    fun BlockPistonExtendEvent.pistonExtend() {
+        if (isCancelled) return
+        blocks.forEach { block ->
+            handleBlockEvent(block, direction)
         }
     }
 
-    private fun handleBlockEvent(block: Block, direction: BlockFace? = null) {
+    private fun handleBlockEvent(block: Block, direction: BlockFace? = null, shouldDrop: Boolean = true) {
         val pdc = getPDC(block)
         val key = getKey(block.location)
 
@@ -110,24 +107,23 @@ class Alces : JavaPlugin(), Listener {
             runNextTick { newBlockPdc.set(getKey(newBlock.location), PersistentDataType.STRING, data) }
 
         } else {
-            if (block.drops.isEmpty()) return
-            val lines = data.split("\n")
-            val displayName = lines[0]
-            val lore = lines.drop(1)
+            if (shouldDrop) {
+                val lines = data.split("\n")
+                val displayName = lines[0]
+                val lore = lines.drop(1)
 
-            val drop = block.drops.first()
-            val itemMeta = drop.itemMeta
+                val drop = block.drops.first()
+                val itemMeta = drop.itemMeta
 
-            if (displayName != "-") itemMeta.displayName(serializer.deserialize(displayName))
-            if (lore.isNotEmpty() && lore[0] != "-") itemMeta.lore(lore.map { serializer.deserialize(it) })
+                if (displayName != "-") itemMeta.displayName(serializer.deserialize(displayName))
+                if (lore.isNotEmpty() && lore[0] != "-") itemMeta.lore(lore.map { serializer.deserialize(it) })
 
-            drop.itemMeta = itemMeta
-            block.location.world.dropItemNaturally(block.location, drop)
-
+                drop.itemMeta = itemMeta
+                block.location.world.dropItemNaturally(block.location, drop)
+            }
             block.type = Material.AIR
             pdc.remove(key)
         }
-
     }
 
     private fun getPDC(block: Block): PersistentDataContainer {
